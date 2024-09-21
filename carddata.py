@@ -1,0 +1,122 @@
+import pandas as pd
+import io
+import os
+import requests
+import gzip
+
+card_csv_url = "https://17lands-public.s3.amazonaws.com/analysis_data/cards/cards.csv"
+#url = "https://17lands-public.s3.amazonaws.com/analysis_data/game_data/game_data_public.BLB.PremierDraft.csv.gz"
+#91603
+
+def get_card_data():
+    cards_df = pd.read_csv(card_csv_url)
+    return cards_df
+
+def get_name_from_id(cards_df, card_id):
+    # Try to find the card with the given ID
+    card = cards_df[cards_df['id'] == card_id]
+    
+    # If a card is found, return its name
+    if not card.empty:
+        return card['name'].iloc[0]
+    else:
+        return f"No card found with ID: {card_id}"
+
+def get_game_data(setsymbol, draftformat = "PremierDraft"):
+    url = "https://17lands-public.s3.amazonaws.com/analysis_data/game_data/game_data_public."+setsymbol+"."+draftformat+".csv.gz"
+    game_df = load_gzipped_csv_from_url(url)
+    return game_df
+
+def load_gzipped_csv_from_url(url):
+    # Send a GET request to the URL
+    response = requests.get(url)
+    
+    # Check if the request was successful
+    if response.status_code == 200:
+        # Decompress the gzipped content
+        decompressed_content = gzip.decompress(response.content)
+        
+        # Create a StringIO object from the decompressed content
+        csv_file = io.StringIO(decompressed_content.decode('utf-8'))
+        
+        # Read the CSV file into a pandas DataFrame
+        df = pd.read_csv(csv_file)
+        
+        return df
+    else:
+        print(f"Failed to retrieve data. Status code: {response.status_code}")
+        return None
+
+
+# expansion
+# event_type
+# draft_id
+# draft_time
+# game_time
+# build_index
+# match_number
+# game_number
+# rank
+# opp_rank
+# main_colors
+# splash_colors
+# on_play
+# num_mulligans
+# opp_num_mulligans
+# opp_colors
+# num_turns
+# won
+# user_n_games_bucket
+# user_game_win_rate_bucket
+#opening_hand_Bark-Knuckle Boxer
+#drawn_Bark-Knuckle Boxer
+#tutored_Bark-Knuckle Boxer
+#deck_Bark-Knuckle Boxer
+#sideboard_Bark-Knuckle Boxer
+
+def filter_game_data_to_set(setsymbol, game_df, cards_df):
+    cards_in_set_df = cards_df[cards_df['expansion'] == setsymbol].copy()  # Use copy() to avoid modifying the original DataFrame
+    # Initialize columns
+    cards_in_set_df['GDWR'] = None
+    cards_in_set_df['OHWR'] = None
+    cards_in_set_df['GIHWR'] = None
+    for card in cards_in_set_df['name']:
+        drawn_col_name = "drawn_" + card
+        opening_hand_col_name = "opening_hand_" + card
+        # Check if the columns exist
+        if drawn_col_name in game_df.columns and opening_hand_col_name in game_df.columns:
+            # GDWR: Calculate directly
+            drawn_count = game_df[drawn_col_name].sum()  # Number of times card was drawn
+            drawn_game_won_count = game_df[(game_df[drawn_col_name] == 1) & (game_df['won'] == True)].shape[0]
+            GDWR = drawn_game_won_count / drawn_count if drawn_count > 0 else None
+            # OHWR: Calculate directly
+            opening_hand_count = game_df[opening_hand_col_name].sum()  # Number of times card was in opening hand
+            opening_hand_game_won_count = game_df[(game_df[opening_hand_col_name] == 1) & (game_df['won'] == True)].shape[0]
+            OHWR = opening_hand_game_won_count / opening_hand_count if opening_hand_count > 0 else None
+            # GIHWR: Calculate directly
+            GIH_count = ((game_df[drawn_col_name] == 1) | (game_df[opening_hand_col_name] == 1)).sum()
+            GIH_game_won_count = game_df[((game_df[drawn_col_name] == 1) | (game_df[opening_hand_col_name] == 1)) & (game_df['won'] == True)].shape[0]
+            GIHWR = GIH_game_won_count / GIH_count if GIH_count > 0 else None
+            # Assign the calculated values using .loc with the card's index
+            cards_in_set_df.loc[cards_in_set_df['name'] == card, 'GDWR'] = GDWR
+            cards_in_set_df.loc[cards_in_set_df['name'] == card, 'OHWR'] = OHWR
+            cards_in_set_df.loc[cards_in_set_df['name'] == card, 'GIHWR'] = GIHWR   
+    return cards_in_set_df
+
+
+
+def get_card_data_for_set(setsymbol):
+    file_name = setsymbol+".csv"
+    if os.path.exists(file_name):
+        card_data = pd.read_csv(file_name)
+        return card_data
+    else:
+        cards_df = get_card_data()
+        game_df = get_game_data(setsymbol)
+        cards_in_set_df = filter_game_data_to_set(setsymbol, game_df, cards_df)
+        cards_in_set_df.to_csv(file_name, index=False)
+        return cards_in_set_df
+
+
+if __name__ == '__main__':
+    main()
