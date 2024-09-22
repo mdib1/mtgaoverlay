@@ -1,3 +1,6 @@
+usage:
+just run mtga_follower.py and load up arena.
+
 todo: 
 
 move card set and overlay logic out of follower code into apiclient
