@@ -1,5 +1,7 @@
 usage:
-just run mtga_follower.py and load up arena.
+pip install -r requirements.txt to get all required libraries
+python mtga_follower.py
+load up arena and watch the magic
 
 todo: 
 
