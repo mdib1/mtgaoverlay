@@ -1,6 +1,9 @@
 usage:
+
 pip install -r requirements.txt to get all required libraries
+
 python mtga_follower.py
+
 load up arena and watch the magic
 
 todo: 
