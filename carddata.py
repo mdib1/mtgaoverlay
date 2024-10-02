@@ -3,6 +3,7 @@ import io
 import os
 import requests
 import gzip
+import datetime
 
 card_csv_url = "https://17lands-public.s3.amazonaws.com/analysis_data/cards/cards.csv"
 #url = "https://17lands-public.s3.amazonaws.com/analysis_data/game_data/game_data_public.BLB.PremierDraft.csv.gz"
@@ -24,8 +25,11 @@ def get_name_from_id(cards_df, card_id):
 
 def get_game_data(setsymbol, draftformat = "PremierDraft"):
     url = "https://17lands-public.s3.amazonaws.com/analysis_data/game_data/game_data_public."+setsymbol+"."+draftformat+".csv.gz"
-    game_df = load_gzipped_csv_from_url(url)
-    return game_df
+    try:
+        game_df = load_gzipped_csv_from_url(url)
+        return game_df        
+    except Exception as e:
+        print(f"An error occurred: {e}")    
 
 def load_gzipped_csv_from_url(url):
     # Send a GET request to the URL
@@ -44,8 +48,7 @@ def load_gzipped_csv_from_url(url):
         
         return df
     else:
-        print(f"Failed to retrieve data. Status code: {response.status_code}")
-        return None
+        raise Exception(f"HTTP error {response.status_code}: {response.reason}")
 
 
 # expansion
@@ -104,18 +107,34 @@ def filter_game_data_to_set(setsymbol, game_df, cards_df):
     return cards_in_set_df
 
 
+def redownload_card_data_for_set(setsymbol, file_name):
+    cards_df = get_card_data()
+    game_df = get_game_data(setsymbol)
+    if game_df is None:
+        return None
+    cards_in_set_df = filter_game_data_to_set(setsymbol, game_df, cards_df)
+    if cards_in_set_df.shape[0] > 0:
+        redownload_card_data()
+        cards_in_set_df.to_csv(file_name, index=False)
+    else:
+        return None
+    return cards_in_set_df    
 
 def get_card_data_for_set(setsymbol):
     file_name = setsymbol+".csv"
     if os.path.exists(file_name):
-        card_data = pd.read_csv(file_name)
-        return card_data
+        modification_time = os.path.getmtime(file_name)
+        modification_datetime = datetime.datetime.fromtimestamp(modification_time)
+        today = datetime.date.today()
+        if modification_datetime.date() < today:
+            print("Card data for "+setsymbol+" is older than today, redownloading")
+            return redownload_card_data_for_set(setsymbol, file_name)
+        else:
+            print("Card data for "+setsymbol+" is fresh, reusing saved data")
+            card_data = pd.read_csv(file_name)
+            return card_data
     else:
-        cards_df = get_card_data()
-        game_df = get_game_data(setsymbol)
-        cards_in_set_df = filter_game_data_to_set(setsymbol, game_df, cards_df)
-        cards_in_set_df.to_csv(file_name, index=False)
-        return cards_in_set_df
+        return redownload_card_data_for_set(setsymbol, file_name)
 
 
 if __name__ == '__main__':
