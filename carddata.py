@@ -114,7 +114,7 @@ def redownload_card_data_for_set(setsymbol, file_name):
         return None
     cards_in_set_df = filter_game_data_to_set(setsymbol, game_df, cards_df)
     if cards_in_set_df.shape[0] > 0:
-        redownload_card_data()
+        #redownload_card_data() no idea why i left this here
         cards_in_set_df.to_csv(file_name, index=False)
     else:
         return None

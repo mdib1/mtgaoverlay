@@ -28,9 +28,12 @@ import traceback
 import uuid
 import threading
 
+
+
 from carddata import *
 
 from collections import defaultdict
+from collections import Counter
 
 import threading
 from overlay import show_overlay, hide_overlay, close_overlay, get_overlay_manager, run_overlay
@@ -155,6 +158,11 @@ MAX_MILLISECONDS_SINCE_EPOCH = int(1000 * datetime.datetime(3000, 1, 1).timestam
 
 _ERROR_LINES_RECENCY = 10
 
+def list_difference(list1, list2):
+    count1 = Counter(list1)
+    count2 = Counter(list2)
+    return [item for item in list1 if count1[item] > count2[item]]
+
 def show_overlay_threaded(pack_info):
     threading.Thread(target=show_overlay, args=(pack_info,), daemon=True).start()
 
@@ -227,6 +235,18 @@ def get_rank_string(rank_class, level, percentile, place, step):
     """
     return '-'.join(str(x) for x in [rank_class, level, percentile, place, step])
 
+class Round:
+    def __init__(self):
+        self.boosters = []
+        for x in range(14):
+            self.boosters.append([])
+
+class DraftOpens:
+    def __init__(self):
+        round1 = Round()
+        round2 = Round()
+        round3 = Round()
+        self.rounds = [round1, round2, round3]        
 
 class Follower:
     """Follows along a log, parses the messages, and passes along the parsed data to the API endpoint."""
@@ -242,6 +262,7 @@ class Follower:
         self._reinitialize()
         self.__time_last_overlaid = None
         self.__cards_in_set_df = None
+        self.__draft_opens = DraftOpens()
 
     def _reinitialize(self):
         self.__time_last_overlaid = None
@@ -277,6 +298,7 @@ class Follower:
         self.game_history_events = []
         self.pending_game_submission = {}
         self.pending_game_result = {}
+        self.__draft_opens = DraftOpens()
         self.pending_match_result = {}
 
         self.last_blob = ''
@@ -1058,6 +1080,23 @@ class Follower:
                     error=e,
                     stacktrace=traceback.format_exc(),
                 )
+    def __update_draft_opens(self, pack):
+        booster_num = pack['pick_number'] % 8
+        #logger.info("updating booster "+str(booster_num)        )
+        if len(self.__draft_opens.rounds[pack['pack_number']].boosters[booster_num]) == 0:
+            self.__draft_opens.rounds[pack['pack_number']].boosters[booster_num] = pack['card_ids']
+            #logger.info ("added booster "+str(booster_num)+" with card ids "+str(pack['card_ids']))
+        else:
+            #logger.info("booster "+str(booster_num)+" already exists, here are the cards its missing:")
+            #set1 = set(self.__draft_opens.rounds[pack['pack_number']].boosters[booster_num])
+            #set2 = set(pack['card_ids'])
+            #missing_cards = list(set1 - set2)         
+            logger.info(self.__draft_opens.rounds[pack['pack_number']].boosters[booster_num])   
+            logger.info(pack['card_ids'])
+            missing_cards = list_difference(self.__draft_opens.rounds[pack['pack_number']].boosters[booster_num], pack['card_ids'])
+            return missing_cards
+            #logger.info(missing_cards)
+        #if self.__draft_opens[pack['pack_number']]
     def __prep_and_show_overlay(self, pack):
         if self.__cards_in_set_df is None:
             #logger.info(pack['event_name'])
@@ -1067,11 +1106,17 @@ class Follower:
                 second_term = "Chaos"
             logger.info("getting card data for set "+second_term)
             self.__cards_in_set_df = get_card_data_for_set(second_term)           
+        missing_cards = self.__update_draft_opens(pack)
         pack_info = f"Pack {pack['pack_number']}, Pick {pack['pick_number']}\nCards:"
         card_details_with_gihwr = [get_card_info(card_id, self.__cards_in_set_df) for card_id in pack['card_ids']]
         card_details_with_gihwr.sort(key=lambda x: x[1], reverse=True)
         sorted_card_details = [card[0] for card in card_details_with_gihwr]
         pack_info += "\n" + "\n".join(sorted_card_details)
+        if missing_cards is not None:
+            missing_card_names = [get_card_info(card_id, self.__cards_in_set_df) for card_id in missing_cards]
+            missing_card_names_output = [card[0] for card in missing_card_names]
+            pack_info += "\n" + "Cards that are missing: "
+            pack_info += "\n" + "\n".join(missing_card_names_output)
         #card_details = [get_card_info(card_id, self.__cards_in_set_df) for card_id in pack['card_ids']]
         #pack_info += "\n" + "\n".join(card_details)
         #time.sleep(5)
