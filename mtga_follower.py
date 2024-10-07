@@ -262,9 +262,11 @@ class Follower:
         self._reinitialize()
         self.__time_last_overlaid = None
         self.__cards_in_set_df = None
+        self.__set_data_not_available = False
         self.__draft_opens = DraftOpens()
 
     def _reinitialize(self):
+        self.__set_data_not_available = False
         self.__time_last_overlaid = None
         self.buffer = []
         self.cur_log_time = datetime.datetime.fromtimestamp(0)
@@ -1082,21 +1084,24 @@ class Follower:
                 )
     def __update_draft_opens(self, pack):
         booster_num = pack['pick_number'] % 8
+        pack_number_index = pack['pack_number'] - 1
         #logger.info("updating booster "+str(booster_num)        )
-        if len(self.__draft_opens.rounds[pack['pack_number']].boosters[booster_num]) == 0:
-            self.__draft_opens.rounds[pack['pack_number']].boosters[booster_num] = pack['card_ids']
+        if len(self.__draft_opens.rounds[pack_number_index].boosters[booster_num]) == 0:
+            self.__draft_opens.rounds[pack_number_index].boosters[booster_num] = pack['card_ids']
             #logger.info ("added booster "+str(booster_num)+" with card ids "+str(pack['card_ids']))
         else:
             #logger.info("booster "+str(booster_num)+" already exists, here are the cards its missing:")
-            #set1 = set(self.__draft_opens.rounds[pack['pack_number']].boosters[booster_num])
+            #set1 = set(self.__draft_opens.rounds[pack_number_index].boosters[booster_num])
             #set2 = set(pack['card_ids'])
             #missing_cards = list(set1 - set2)         
-            logger.info(self.__draft_opens.rounds[pack['pack_number']].boosters[booster_num])   
+            logger.info(self.__draft_opens.rounds[pack_number_index].boosters[booster_num])   
             logger.info(pack['card_ids'])
-            missing_cards = list_difference(self.__draft_opens.rounds[pack['pack_number']].boosters[booster_num], pack['card_ids'])
+            missing_cards = list_difference(self.__draft_opens.rounds[pack_number_index].boosters[booster_num], pack['card_ids'])
             return missing_cards
             #logger.info(missing_cards)
         #if self.__draft_opens[pack['pack_number']]
+    def __get_card_data_from_mtgjson(self, setsymbol):
+        self.__cards_in_set_df = GetDataForSetFromMTGJson(setsymbol)
     def __prep_and_show_overlay(self, pack):
         if self.__cards_in_set_df is None:
             #logger.info(pack['event_name'])
@@ -1105,7 +1110,11 @@ class Follower:
             if second_term=="RemixDraft":
                 second_term = "Chaos"
             logger.info("getting card data for set "+second_term)
-            self.__cards_in_set_df = get_card_data_for_set(second_term)           
+            self.__cards_in_set_df = get_card_data_for_set(second_term)
+            if self.__cards_in_set_df is None:
+                if self.__set_data_not_available is False:
+                    self.__get_card_data_from_mtgjson(second_term)
+                    self.__set_data_not_available = True           
         missing_cards = self.__update_draft_opens(pack)
         pack_info = f"Pack {pack['pack_number']}, Pick {pack['pick_number']}\nCards:"
         card_details_with_gihwr = [get_card_info(card_id, self.__cards_in_set_df) for card_id in pack['card_ids']]
@@ -1155,6 +1164,7 @@ class Follower:
         try:
             self.cur_draft_event = json_obj['EventName']
             logger.info(f'Joined draft pod: {self.cur_draft_event}')
+            self.__draft_opens = DraftOpens()
 
         except Exception as e:
             self._log_error(
@@ -1221,7 +1231,7 @@ class Follower:
                 'method': 'Draft.Notify',
             }
             logger.info(f'Human draft pack (Draft.Notify): {pack}')
-            self.__prep_and_show_overlay(pack)
+            #self.__prep_and_show_overlay(pack)
             self._api_client.submit_human_draft_pack(self._add_base_api_data(pack))
 
         except Exception as e:

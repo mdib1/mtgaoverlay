@@ -9,6 +9,50 @@ card_csv_url = "https://17lands-public.s3.amazonaws.com/analysis_data/cards/card
 #url = "https://17lands-public.s3.amazonaws.com/analysis_data/game_data/game_data_public.BLB.PremierDraft.csv.gz"
 #91603
 
+def downloadMTGJsonDataForSet(setsymbol):
+    file_path = setsymbol+".json"
+    if os.path.exists(file_path):
+        # File exists, so we'll read and return its contents
+        with open(file_path, 'r') as json_file:
+            return json.load(json_file)    
+    else:
+        url = "https://mtgjson.com/api/v5/"+file_path
+        response = requests.get(url)
+        data = response.json()
+        with open(file_path, 'w') as json_file:
+            json.dump(data, json_file, indent=4)
+        return data
+
+def GetDataForSetFromMTGJson(setsymbol):
+    file_name = setsymbol+"_MTGJson.csv"
+    if os.path.exists(file_name):
+        card_data = pd.read_csv(file_name)
+        return card_data
+    else:
+        data = downloadMTGJsonDataForSet(setsymbol)
+        columns = ['id', 'expansion', 'name', 'rarity', 'color_identity', 'mana_value', 
+               'types']
+    
+        # Create a list to hold our processed card data
+        processed_cards = []    
+        for card in data['data']['cards']:
+            arena_id = card['identifiers'].get('mtgArenaId')
+            if arena_id is not None:
+                processed_card = {
+                    'id': arena_id,
+                    'expansion': setsymbol,
+                    'name': card['name'],
+                    'rarity': card.get('rarity'),
+                    'color_identity': ','.join(card.get('colorIdentity', [])),  # Join list into string
+                    'mana_value': card.get('manaValue'),
+                    'types': [] #','.join(card.get('types', [])),  # Join list into string
+                }
+                processed_cards.append(processed_card)
+        df = pd.DataFrame(processed_cards, columns=columns)       
+        df.to_csv(file_name, index=False) 
+        return df
+
+
 def get_card_data():
     cards_df = pd.read_csv(card_csv_url)
     return cards_df
