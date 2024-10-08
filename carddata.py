@@ -4,6 +4,7 @@ import os
 import requests
 import gzip
 import datetime
+import json
 
 card_csv_url = "https://17lands-public.s3.amazonaws.com/analysis_data/cards/cards.csv"
 #url = "https://17lands-public.s3.amazonaws.com/analysis_data/game_data/game_data_public.BLB.PremierDraft.csv.gz"
@@ -31,7 +32,7 @@ def GetDataForSetFromMTGJson(setsymbol):
     else:
         data = downloadMTGJsonDataForSet(setsymbol)
         columns = ['id', 'expansion', 'name', 'rarity', 'color_identity', 'mana_value', 
-               'types']
+               'types', 'boosterTypes','number']
     
         # Create a list to hold our processed card data
         processed_cards = []    
@@ -45,7 +46,9 @@ def GetDataForSetFromMTGJson(setsymbol):
                     'rarity': card.get('rarity'),
                     'color_identity': ','.join(card.get('colorIdentity', [])),  # Join list into string
                     'mana_value': card.get('manaValue'),
-                    'types': [] #','.join(card.get('types', [])),  # Join list into string
+                    'types': [], #','.join(card.get('types', [])),  # Join list into string
+                    'boosterTypes':card.get('boosterTypes'),
+                    'number':card.get('number')
                 }
                 processed_cards.append(processed_card)
         df = pd.DataFrame(processed_cards, columns=columns)       

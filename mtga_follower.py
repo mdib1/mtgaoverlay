@@ -31,12 +31,14 @@ import threading
 
 
 from carddata import *
+from card_positions import *
 
 from collections import defaultdict
 from collections import Counter
 
+
 import threading
-from overlay import show_overlay, hide_overlay, close_overlay, get_overlay_manager, run_overlay
+from overlay import show_overlay, show_all_overlays, show_card_overlay, hide_overlay, close_overlay, get_overlay_manager, run_overlay
 
 import dateutil.parser
 
@@ -163,24 +165,99 @@ def list_difference(list1, list2):
     count2 = Counter(list2)
     return [item for item in list1 if count1[item] > count2[item]]
 
-def show_overlay_threaded(pack_info):
-    threading.Thread(target=show_overlay, args=(pack_info,), daemon=True).start()
+#def show_overlay_threaded(pack_info):
+#    threading.Thread(target=show_overlay, args=(pack_info,), daemon=True).start()
+
+
+# def get_card_stats_for_overlay(card_id, cards_in_set_df):
+#     try:
+#         # Lookup card in cards_in_set_df by card_id
+#         card_row = cards_in_set_df[cards_in_set_df['id'] == card_id]
+        
+#         # If card exists, extract the details
+#         if not card_row.empty:
+#             card_name = card_row['name'].values[0]
+#             GDWR = card_row['GDWR'].values[0]
+#             OHWR = card_row['OHWR'].values[0]
+#             GIHWR = card_row['GIHWR'].values[0]
+#             # Return both the formatted string and GIHWR for sorting
+#             return f"{card_name}\nGDWR: {GDWR:.2f}\n OHWR: {OHWR:.2f}\n GIHWR: {GIHWR:.2f}\n"
+#         else:
+#             return (f"Card ID {card_id} not found") 
+#     except Exception as e:
+#         logger.error(f'Error processing get_card_stats_for_overlay: {e}')
+
+import json
+
+def get_card_packdebug_info(card_id, cards_in_set_df):
+    try:
+        # Lookup card in cards_in_set_df by card_id
+        card_row = cards_in_set_df[cards_in_set_df['id'] == card_id]
+        
+        if card_row.empty:
+            return json.dumps({"error": f"Card ID {card_id} not found"})
+        
+        # Extract the card information
+        name = card_row['name'].values[0]
+        rarity = card_row['rarity'].values[0] if 'rarity' in card_row.columns else None
+        number = card_row['number'].values[0] if 'number' in card_row.columns else None
+        boosterTypes = card_row['boosterTypes'].values[0] if 'boosterTypes' in card_row.columns else None
+        
+        # Create a dictionary with the card information
+        card_info = {
+            'id': card_id,
+            'name': name,
+            'rarity': rarity,
+            'number': number,
+            'boosterTypes': boosterTypes
+        }
+        
+        # Remove any None values to keep the JSON clean
+        card_info = {k: v for k, v in card_info.items() if v is not None}
+
+        return card_info
+    
+    except Exception as e:
+        logger.error(f'Error processing get_card_packdebug_info: {e}')
+        return json.dumps({"error": f"Error processing card ID {card_id}: {str(e)}"})
 
 def get_card_info(card_id, cards_in_set_df):
-    # Lookup card in cards_in_set_df by card_id
-    card_row = cards_in_set_df[cards_in_set_df['id'] == card_id]
-    
-    # If card exists, extract the details
-    if not card_row.empty:
-        card_name = card_row['name'].values[0]
-        GDWR = card_row['GDWR'].values[0]
-        OHWR = card_row['OHWR'].values[0]
-        GIHWR = card_row['GIHWR'].values[0]
-        # Return both the formatted string and GIHWR for sorting
-        return (f"{card_name} (GDWR: {GDWR:.2f}, OHWR: {OHWR:.2f}, GIHWR: {GIHWR:.2f})", GIHWR)
-    else:
-        return (f"Card ID {card_id} not found", float('-inf'))  # Assign -inf GIHWR for cards not found
-
+    try:
+        # Lookup card in cards_in_set_df by card_id
+        card_row = cards_in_set_df[cards_in_set_df['id'] == card_id]
+        # If card exists, extract the details
+        if not card_row.empty:
+            card_name = card_row['name'].values[0]
+            
+            # Check if each column exists and get its value, or use 'N/A' if it doesn't exist
+            GDWR = card_row['GDWR'].values[0] if 'GDWR' in card_row.columns else 'N/A'
+            OHWR = card_row['OHWR'].values[0] if 'OHWR' in card_row.columns else 'N/A'
+            GIHWR = card_row['GIHWR'].values[0] if 'GIHWR' in card_row.columns else 'N/A'
+            
+            # Format the string based on which values are available
+            info_parts = []
+            info_parts.append(f"GDWR: {GDWR:.2f}" if isinstance(GDWR, float) else f"GDWR: {GDWR}")
+            info_parts.append(f"OHWR: {OHWR:.2f}" if isinstance(OHWR, float) else f"OHWR: {OHWR}")
+            info_parts.append(f"GIHWR: {GIHWR:.2f}" if isinstance(GIHWR, float) else f"GIHWR: {GIHWR}")            
+            # if GDWR != 'N/A':
+            #     info_parts.append(f"GDWR: {GDWR:.2f}" if isinstance(GDWR, float) else f"GDWR: {GDWR}")
+            # if OHWR != 'N/A':
+            #     info_parts.append(f"OHWR: {OHWR:.2f}" if isinstance(OHWR, float) else f"OHWR: {OHWR}")
+            # if GIHWR != 'N/A':
+            #     info_parts.append(f"GIHWR: {GIHWR:.2f}" if isinstance(GIHWR, float) else f"GIHWR: {GIHWR}")
+            
+            info_string = ", ".join(info_parts)
+            formatted_string = f"{card_name} ({info_string})" if info_parts else card_name
+            
+            # Use GIHWR for sorting if it exists and is a number, otherwise use 0
+            sort_value = float(GIHWR) if isinstance(GIHWR, (int, float)) else 0
+            
+            return (formatted_string, sort_value)
+        else:
+            return (f"Card ID {card_id} not found", float('-inf'))  # Assign -inf for cards not found
+    except Exception as e:
+        logger.error(f'Error processing get_card_info: {e}')
+        return (f"Error processing card ID {card_id}", float('-inf'))
 
 def extract_time(time_str):
     """
@@ -370,11 +447,11 @@ class Follower:
 
     def _log_error(self, message: str, error: Exception, stacktrace: str):
         logger.error(message)
-        self._api_client.submit_error_info(self._add_base_api_data({
-            "blob": self.current_debug_blob,
-            "recent_lines": self.recent_lines,
-            "stacktrace": traceback.format_exc(),
-        }))
+        #self._api_client.submit_error_info(self._add_base_api_data({
+        #    "blob": self.current_debug_blob,
+        #    "recent_lines": self.recent_lines,
+        #    "stacktrace": traceback.format_exc(),
+        #}))
 
     def __check_detailed_logs(self, line):
         if (line.startswith('DETAILED LOGS: DISABLED')):
@@ -1070,7 +1147,7 @@ class Follower:
                     'pick_number': int(json_obj['PickNumber']),
                     'card_ids': [int(x) for x in json_obj['DraftPack']],
                 }
-                logger.info(f'Draft pack: {pack}')
+                #logger.info(f'Draft pack: {pack}')
                 #pack_info = f"Pack {pack['pack_number']}, Pick {pack['pick_number']}\nCards: {', '.join(map(str, pack['card_ids']))}"                 
                 self.__prep_and_show_overlay(pack)
                 #self.overlay_active = True
@@ -1094,46 +1171,125 @@ class Follower:
             #set1 = set(self.__draft_opens.rounds[pack_number_index].boosters[booster_num])
             #set2 = set(pack['card_ids'])
             #missing_cards = list(set1 - set2)         
-            logger.info(self.__draft_opens.rounds[pack_number_index].boosters[booster_num])   
-            logger.info(pack['card_ids'])
+            #logger.info(self.__draft_opens.rounds[pack_number_index].boosters[booster_num])   
+            #logger.info(pack['card_ids'])
             missing_cards = list_difference(self.__draft_opens.rounds[pack_number_index].boosters[booster_num], pack['card_ids'])
             return missing_cards
             #logger.info(missing_cards)
         #if self.__draft_opens[pack['pack_number']]
+
     def __get_card_data_from_mtgjson(self, setsymbol):
-        self.__cards_in_set_df = GetDataForSetFromMTGJson(setsymbol)
-    def __prep_and_show_overlay(self, pack):
-        if self.__cards_in_set_df is None:
+        self.__cards_in_set_mtgjson_df = GetDataForSetFromMTGJson(setsymbol)
+
+    def __populate_cards_in_set_df(self, pack):
+        try:
             #logger.info(pack['event_name'])
             parts = pack['event_name'].split('_')
             second_term = parts[1]
             if second_term=="RemixDraft":
                 second_term = "Chaos"
             logger.info("getting card data for set "+second_term)
+            self.__get_card_data_from_mtgjson(second_term)
             self.__cards_in_set_df = get_card_data_for_set(second_term)
             if self.__cards_in_set_df is None:
                 if self.__set_data_not_available is False:
-                    self.__get_card_data_from_mtgjson(second_term)
-                    self.__set_data_not_available = True           
-        missing_cards = self.__update_draft_opens(pack)
-        pack_info = f"Pack {pack['pack_number']}, Pick {pack['pick_number']}\nCards:"
-        card_details_with_gihwr = [get_card_info(card_id, self.__cards_in_set_df) for card_id in pack['card_ids']]
-        card_details_with_gihwr.sort(key=lambda x: x[1], reverse=True)
-        sorted_card_details = [card[0] for card in card_details_with_gihwr]
-        pack_info += "\n" + "\n".join(sorted_card_details)
-        if missing_cards is not None:
-            missing_card_names = [get_card_info(card_id, self.__cards_in_set_df) for card_id in missing_cards]
-            missing_card_names_output = [card[0] for card in missing_card_names]
-            pack_info += "\n" + "Cards that are missing: "
-            pack_info += "\n" + "\n".join(missing_card_names_output)
-        #card_details = [get_card_info(card_id, self.__cards_in_set_df) for card_id in pack['card_ids']]
-        #pack_info += "\n" + "\n".join(card_details)
-        #time.sleep(5)
-        #show_overlay(pack_info)
-        show_overlay(pack_info)
-        #time.sleep(5)
-        if (self.debug_mode):
-            input("Press Enter to continue to the next entry...")                        
+                    self.__set_data_not_available = True       
+        except Exception as e:
+            # Handle any exception thrown by get_card_positions
+            print(f"Error with __populate_cards_in_set_df: {e}")        
+
+
+    def __sort_pack(self, pack):
+        # Get card info for each card in the pack
+        card_packdebug_info = [get_card_packdebug_info(card_id, self.__cards_in_set_mtgjson_df) for card_id in pack['card_ids']]
+        
+        # Define a custom sorting key function
+        def sort_key(card):
+            # Define rarity order
+            rarity_order = {'mythic': 0, 'rare': 1, 'uncommon': 2, 'common': 3}
+            
+            # Get rarity and number, use default values if not present
+            rarity = card.get('rarity', 'common').lower()
+            number = card.get('number', '0')
+            
+            # Convert number to int if possible, otherwise use string
+            try:
+                number = int(number)
+            except ValueError:
+                pass
+            
+            # Return tuple for sorting: (rarity_order, number)
+            return (rarity_order.get(rarity, 4), number)
+        
+        # Sort the card_packdebug_info list
+        sorted_card_info = sorted(card_packdebug_info, key=sort_key)
+        
+        # Extract sorted card_ids
+        sorted_card_ids = [card['id'] for card in sorted_card_info if 'id' in card]
+        
+        # Update the pack with sorted card_ids
+        pack['card_ids'] = sorted_card_ids
+        return pack, card_packdebug_info
+
+    def __prep_and_show_overlay(self, pack):
+        try:
+            if self.__cards_in_set_df is None:
+                if not self.__set_data_not_available:
+                    self.__populate_cards_in_set_df(pack)        
+            missing_cards = self.__update_draft_opens(pack)
+            #pack_info = f"Pack {pack['pack_number']}, Pick {pack['pick_number']}\nCards:"
+            pack_info = ""
+            
+            pack, card_packdebug_info = self.__sort_pack(pack)
+            
+            if self.__cards_in_set_df is None:
+                #data not available yet so we use mtgjson data without stats
+                card_details_withstats = [get_card_info(card_id, self.__cards_in_set_mtgjson_df) for card_id in pack['card_ids']]
+            else:
+                card_details_withstats = [get_card_info(card_id, self.__cards_in_set_df) for card_id in pack['card_ids']]
+
+            #debug a full pack:
+            if len(pack['card_ids']) > 13:
+                output_string = "\n\n############Cards in pack:############\n"
+                for card in card_packdebug_info:
+                    output_string += str(card['rarity']) + " | "
+                    output_string += str(card['number']) + " | "
+                    output_string += str(card['name']) + "\n"
+                logger.info(output_string)
+
+            #card_details_withstats.sort(key=lambda x: x[1], reverse=True)
+            #card_details = [card[0] for card in card_details_withstats]
+            #pack_info += "\n" + "\n".join(card_details)
+
+            if missing_cards is not None:
+                missing_card_names = [get_card_info(card_id, self.__cards_in_set_mtgjson_df) for card_id in missing_cards]
+                missing_card_names_output = [card[0] for card in missing_card_names]
+                pack_info += "\n" + "Cards that are missing: "
+                pack_info += "\n" + "\n".join(missing_card_names_output)
+
+            #show_overlay(pack_info) disable full overlay for now to test card overlays
+            card_positions = get_card_positions()
+            if card_positions:
+                #for card_position in card_positions:
+                    #logger.info(card_position)
+                #card_stats_with_gihwr = [get_card_stats_for_overlay(card_id, self.__cards_in_set_df) for card_id in pack['card_ids']]
+
+                #logger.info(card_positions)
+                #logger.info(card_stats_with_gihwr)
+                card_overlays = []
+                i = 0
+                for card_stats in card_details_withstats:
+                    #logger.info(card_stats[0])
+                    #logger.info(card_positions[i])
+                    #logger.info(i)
+                    card_overlays.append([card_stats[0], card_positions[i]])
+                    i = i + 1            
+                show_all_overlays(card_overlays, pack_info)
+            if (self.debug_mode):
+                input("Press Enter to continue to the next entry...")     
+        except Exception as e:
+            # Handle any exception thrown by get_card_positions
+            print(f"Error with prep and show overlay: {e}")                   
              
     def __handle_bot_draft_pick(self, json_obj):
         """Handle 'Draft.MakePick messages."""
@@ -1147,7 +1303,7 @@ class Follower:
                 'pick_number': int(json_obj['PickNumber']),
                 'card_id': int(json_obj['CardId']),
             }
-            logger.info(f'Draft pick: {pick}')
+            #logger.info(f'Draft pick: {pick}')
             self._api_client.submit_draft_pick(self._add_base_api_data(pick))
 
         except Exception as e:
@@ -1163,7 +1319,7 @@ class Follower:
 
         try:
             self.cur_draft_event = json_obj['EventName']
-            logger.info(f'Joined draft pod: {self.cur_draft_event}')
+            #logger.info(f'Joined draft pod: {self.cur_draft_event}')
             self.__draft_opens = DraftOpens()
 
         except Exception as e:
@@ -1187,7 +1343,7 @@ class Follower:
                 'card_ids': json_obj['CardsInPack'],
                 'method': 'LogBusiness',
             }
-            logger.info(f'Human draft pack (combined): {pack}')
+            #logger.info(f'Human draft pack (combined): {pack}')
             self.__prep_and_show_overlay(pack)
             self._api_client.submit_human_draft_pack(self._add_base_api_data(pack))
 
@@ -1208,7 +1364,7 @@ class Follower:
                 'auto_pick': json_obj['AutoPick'],
                 'time_remaining': json_obj['TimeRemainingOnPick'],
             }
-            logger.info(f'Human draft pick (combined): {pick}')
+            #logger.info(f'Human draft pick (combined): {pick}')
             self._api_client.submit_human_draft_pick(self._add_base_api_data(pick))
 
         except Exception as e:
@@ -1230,7 +1386,7 @@ class Follower:
                 'card_ids': [int(x) for x in json_obj['PackCards'].split(',')],
                 'method': 'Draft.Notify',
             }
-            logger.info(f'Human draft pack (Draft.Notify): {pack}')
+            #logger.info(f'Human draft pack (Draft.Notify): {pack}')
             #self.__prep_and_show_overlay(pack)
             self._api_client.submit_human_draft_pack(self._add_base_api_data(pack))
 
@@ -1254,7 +1410,7 @@ class Follower:
                 'companion': decks['Companions'][0]['cardId'] if len(decks['Companions']) > 0 else 0,
                 'is_during_match': False,
             }
-            logger.info(f'Deck submission (Event_SetDeck): {deck}')
+            #logger.info(f'Deck submission (Event_SetDeck): {deck}')
             self._api_client.submit_deck_submission(self._add_base_api_data(deck))
 
         except Exception as e:
@@ -1269,7 +1425,7 @@ class Follower:
         try:
             self.cur_rank_data = json_obj
             self.cur_user = json_obj.get('playerId', self.cur_user)
-            logger.info(f'Parsed rank info for {self.cur_user}: {self.cur_rank_data}')
+            #logger.info(f'Parsed rank info for {self.cur_user}: {self.cur_rank_data}')
             data = {
                 'rank_data': self.cur_rank_data,
                 'limited_rank': None,
