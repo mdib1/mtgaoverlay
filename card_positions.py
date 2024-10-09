@@ -2,162 +2,13 @@ import cv2
 import numpy as np
 import win32gui
 import win32api
-import ctypes
 from mss import mss
 from PIL import Image
-
-def get_window_info(window_title):
-    def callback(hwnd, windows):
-        if win32gui.IsWindowVisible(hwnd) and window_title.lower() in win32gui.GetWindowText(hwnd).lower():
-            windows.append((hwnd, win32gui.GetWindowText(hwnd)))
-    windows = []
-    win32gui.EnumWindows(callback, windows)
-    return windows
-
-def get_window_rect(hwnd):
-    window_rect = win32gui.GetWindowRect(hwnd)
-    client_rect = win32gui.GetClientRect(hwnd)
-    left_border = abs(client_rect[0] - window_rect[0])
-    top_border = abs(client_rect[1] - window_rect[1])
-    right_border = abs(window_rect[2] - client_rect[2] - left_border)
-    bottom_border = abs(window_rect[3] - client_rect[3] - top_border)
-    adjusted_rect = (
-        window_rect[0] + left_border,
-        window_rect[1] + top_border,
-        window_rect[2] - right_border,
-        window_rect[3] - bottom_border
-    )
-    return adjusted_rect
-
-def get_scaling_factor():
-    user32 = ctypes.windll.user32
-    user32.SetProcessDPIAware()
-    return user32.GetDpiForSystem() / 96.0
-
-def get_mtga_monitor():
-    def callback(hwnd, monitors):
-        if win32gui.IsWindowVisible(hwnd) and "MTGA" in win32gui.GetWindowText(hwnd):
-            monitor = win32api.MonitorFromWindow(hwnd)
-            monitors.append(monitor)
-    monitors = []
-    win32gui.EnumWindows(callback, monitors)
-    if not monitors:
-        print("MTGA window not found. Defaulting to primary monitor.")
-        return None
-    return monitors[0]
-
-def capture_fullscreen(mtga_monitor=None):
-    with mss() as sct:
-        if mtga_monitor:
-            monitor_info = win32api.GetMonitorInfo(mtga_monitor)
-            monitor = {
-                "left": monitor_info["Monitor"][0],
-                "top": monitor_info["Monitor"][1],
-                "width": monitor_info["Monitor"][2] - monitor_info["Monitor"][0],
-                "height": monitor_info["Monitor"][3] - monitor_info["Monitor"][1],
-            }
-        else:
-            monitor = sct.monitors[0]
-        screenshot = sct.grab(monitor)
-        img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
-        img_np = np.array(img)
-        return img_np
-
-def preprocess_image(image):
-    #gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    #blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    #edges = cv2.Canny(blurred, 50, 150)
-    #edges = cv2.Canny(gray, 500, 800)
-    #blurred = cv2.GaussianBlur(image, (3, 3), 0)
-    lower = (30, 30, 30)  # lower bound for black
-    upper = (40, 40, 40)  # upper bound for black (you can adjust this if needed)
-    thresh = cv2.inRange(image, lower, upper)    
-    return thresh
-    #return edges
-
-def find_card_contours(edges):
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    return contours
-
-def filter_card_contours(contours, screenshot_shape):
-    screen_height, screen_width = screenshot_shape[:2]
-    min_aspect_ratio, max_aspect_ratio = 0.6, 0.8  # Slightly relaxed
-    min_rel_width, max_rel_width = 0.06, 0.08
-    min_rel_height, max_rel_height = 0.165, 0.18
-    #for smaller deck layout, card dimensions ~182x256
-    min_rel_width_larger, max_rel_width_larger = 0.09, 0.1
-    #for smaller deck layout, card dimensions ~240x340
-    min_rel_height_larger, max_rel_height_larger = 0.23, 0.24    
-    
-    card_contours = []
-    for contour in contours:
-        peri = cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
-        
-        if len(approx) == 4:  # Check if the contour is quadrilateral
-            x, y, w, h = cv2.boundingRect(approx)
-            aspect_ratio = w / h
-            rel_width = w / screen_width
-            rel_height = h / screen_height
-            
-            if (min_aspect_ratio < aspect_ratio < max_aspect_ratio and
-                min_rel_width < rel_width < max_rel_width and
-                min_rel_height < rel_height < max_rel_height) or (min_aspect_ratio < aspect_ratio < max_aspect_ratio and
-                min_rel_width_larger < rel_width < max_rel_width_larger and
-                min_rel_height_larger < rel_height < max_rel_height_larger):
-                card_contours.append((x, y, w, h))
-    
-    return card_contours
-
-def non_max_suppression(boxes, overlapThresh=0.3):
-    if len(boxes) == 0:
-        return []
-
-    boxes = np.array(boxes)
-    pick = []
-
-    x1 = boxes[:,0]
-    y1 = boxes[:,1]
-    x2 = boxes[:,0] + boxes[:,2]
-    y2 = boxes[:,1] + boxes[:,3]
-
-    area = (x2 - x1 + 1) * (y2 - y1 + 1)
-    idxs = np.argsort(y2)
-
-    while len(idxs) > 0:
-        last = len(idxs) - 1
-        i = idxs[last]
-        pick.append(i)
-
-        xx1 = np.maximum(x1[i], x1[idxs[:last]])
-        yy1 = np.maximum(y1[i], y1[idxs[:last]])
-        xx2 = np.minimum(x2[i], x2[idxs[:last]])
-        yy2 = np.minimum(y2[i], y2[idxs[:last]])
-
-        w = np.maximum(0, xx2 - xx1 + 1)
-        h = np.maximum(0, yy2 - yy1 + 1)
-
-        overlap = (w * h) / area[idxs[:last]]
-
-        idxs = np.delete(idxs, np.concatenate(([last],
-            np.where(overlap > overlapThresh)[0])))
-
-    return boxes[pick].tolist()
-
-def detect_cards(screenshot):
-    edges = preprocess_image(screenshot)
-    contours = find_card_contours(edges)
-    return filter_card_contours(contours, screenshot.shape)
-
-def draw_detected_cards(image, card_positions):
-    result_image = image.copy()
-    for (x, y, w, h) in card_positions:
-        cv2.rectangle(result_image, (x, y), (x+w, y+h), (0, 255, 0), 2)
-    return result_image
-
-def save_image(image, filepath):
-    cv2.imwrite(filepath, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
-    #print(f"Image saved as {filepath}")
+import win32ui
+import win32con
+import ctypes
+from ctypes import windll
+from statistics import median
 
 def sort_card_positions(card_positions):
     # Sort by Y first and then X
@@ -184,44 +35,171 @@ def sort_card_positions(card_positions):
 
     # Flatten the list of groups while preserving the order
     flattened_positions = [pos for group in grouped_positions for pos in group]
-    
+    #print(flattened_positions)
     return flattened_positions
 
+def capture_mtga_window(main_thread):
+    hwnd = win32gui.FindWindow(None, "MTGA")
+    if not hwnd:
+        print("MTGA window not found")
+        return None
 
-def get_card_positions():
-    window_title = "MTGA"
-    raw_screenshot_path = 'raw_screenshot.png'
-    detected_cards_path = 'detected_cards.png'
-    preprocessed_screenshot_path = 'preprocessed_screenshot.png'
+    left, top, right, bot = win32gui.GetClientRect(hwnd)
+    width = right - left
+    height = bot - top
 
-    try:
-        mtga_monitor = get_mtga_monitor()
-        mtga_screenshot = capture_fullscreen(mtga_monitor)
-        #print(f"Captured full screen image. Dimensions: {mtga_screenshot.shape[1]}x{mtga_screenshot.shape[0]}")
+    if(main_thread):
+        # Account for display scaling
+        try:
+            # Get the window DPI scaling factor
+            user32 = ctypes.windll.user32
+            user32.SetProcessDPIAware()
+            dpi = user32.GetDpiForWindow(hwnd)
+            scale_factor = dpi / 96.0
+
+            # Adjust the width and height
+            width = int(width * scale_factor)
+            height = int(height * scale_factor)
+        except:
+            print("Failed to adjust for DPI scaling. Using unadjusted size.")
+
+    hwndDC = win32gui.GetWindowDC(hwnd)
+    mfcDC = win32ui.CreateDCFromHandle(hwndDC)
+    saveDC = mfcDC.CreateCompatibleDC()
+
+    saveBitMap = win32ui.CreateBitmap()
+    saveBitMap.CreateCompatibleBitmap(mfcDC, width, height)
+    saveDC.SelectObject(saveBitMap)
+
+    result = ctypes.windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 3)
+
+    bmpinfo = saveBitMap.GetInfo()
+    bmpstr = saveBitMap.GetBitmapBits(True)
+
+    im = Image.frombuffer(
+        'RGB',
+        (bmpinfo['bmWidth'], bmpinfo['bmHeight']),
+        bmpstr, 'raw', 'BGRX', 0, 1)
+
+    img_np = np.array(im)
+
+    win32gui.DeleteObject(saveBitMap.GetHandle())
+    saveDC.DeleteDC()
+    mfcDC.DeleteDC()
+    win32gui.ReleaseDC(hwnd, hwndDC)
+
+    return img_np if result == 1 else None
+
+def get_layout_type(screenshot):
+    # Check key positions for both layouts
+    small_checks = [
+        verify_card_position(screenshot, 440, 234, 179, 251),
+        verify_card_position(screenshot, 1932, 234, 179, 251),
+        verify_card_position(screenshot, 440, 500, 179, 251),
+        verify_card_position(screenshot, 1505, 500, 179, 251)
+    ]
+    max_checks = [
+        verify_card_position(screenshot, 366, 240, 240, 338),
+        verify_card_position(screenshot, 1414, 240, 240, 338),
+        verify_card_position(screenshot, 366, 956, 240, 338),
+        verify_card_position(screenshot, 1152, 956, 240, 338)
+    ]
+    
+    small_score = sum(small_checks)
+    max_score = sum(max_checks)
+    
+    if small_score > max_score:
+        return 'small'
+    elif max_score > small_score:
+        return 'maximized'
+    else:
+        # If scores are equal, use edge detection as a tiebreaker
+        small_edges = np.sum(get_edge_image(screenshot[234:485, 440:619]))
+        max_edges = np.sum(get_edge_image(screenshot[240:578, 366:606]))
+        return 'maximized' if max_edges > small_edges else 'small'
+
+def get_expected_positions(layout_type, num_cards):
+    if layout_type == 'small':
+        positions = [
+            (440, 234, 179, 251), (653, 234, 179, 251), (866, 234, 179, 251),
+            (1079, 234, 179, 251), (1292, 234, 179, 251), (1505, 234, 178, 251),
+            (1719, 234, 179, 251), (1932, 234, 179, 251),
+            (440, 500, 179, 251), (653, 500, 179, 251), (866, 500, 179, 251),
+            (1079, 500, 179, 251), (1292, 500, 179, 251), (1505, 500, 179, 251)
+        ]
+    else:  # maximized
+        positions = [
+            (366, 240, 240, 338), (628, 240, 240, 338), (890, 240, 240, 338),
+            (1152, 240, 240, 338), (1414, 240, 240, 338),
+            (366, 598, 240, 338), (628, 598, 240, 338), (890, 598, 240, 338),
+            (1152, 598, 240, 338), (1414, 598, 240, 338),
+            (366, 956, 240, 338), (628, 956, 240, 338), (890, 956, 240, 338),
+            (1152, 956, 240, 338)
+        ]
+    return positions[:num_cards]
+
+def get_edge_image(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    return cv2.Canny(gray, 50, 150)
+
+def verify_card_position(screenshot, x, y, w, h):
+    card_region = screenshot[y:y+h, x:x+w]
+    edges = get_edge_image(card_region)
+    return np.sum(edges) > 5000  # Adjust threshold as needed    
+
+
+
+def detect_cards(screenshot):
+    edges = preprocess_image(screenshot)
+    contours = find_card_contours(edges)
+    return filter_card_contours(contours, screenshot.shape)
+
+def draw_detected_cards(image, card_positions):
+    result_image = image.copy()
+    for i, (x, y, w, h) in enumerate(card_positions):
+        cv2.rectangle(result_image, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        cv2.putText(result_image, str(i+1), (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+    return result_image
+
+def save_image(image, filepath):
+    cv2.imwrite(filepath, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+
+def get_card_positions(expected_cards, main_thread = False):
+    screenshot = capture_mtga_window(main_thread)
+    if screenshot is None:
+        print("Failed to capture MTGA window")
+        return    
+
+    layout_type = get_layout_type(screenshot)
+    expected_positions = get_expected_positions(layout_type, expected_cards)
+    
+    verified_positions = []
+    for position in expected_positions:
+        if verify_card_position(screenshot, *position):
+            verified_positions.append(position)
+    
+    if len(verified_positions) < expected_cards * 0.7:  # If less than 70% of expected cards are found
+        print(f"Warning: Only {len(verified_positions)} out of {expected_cards} expected cards detected. Trying alternative layout.")
+        alt_layout_type = 'maximized' if layout_type == 'small' else 'small'
+        alt_positions = get_expected_positions(alt_layout_type, expected_cards)
+        alt_verified_positions = [pos for pos in alt_positions if verify_card_position(screenshot, *pos)]
         
-        save_image(mtga_screenshot, raw_screenshot_path)
-        #print(f"Raw screenshot saved as {raw_screenshot_path}")
+        if len(alt_verified_positions) > len(verified_positions):
+            print(f"Alternative layout ({alt_layout_type}) found more cards. Using this layout instead.")
+            verified_positions = alt_verified_positions
 
-        preprocessed = preprocess_image(mtga_screenshot)
-        save_image(preprocessed, preprocessed_screenshot_path)
-
-        card_positions = detect_cards(mtga_screenshot)
-        #print(f"Found {len(card_positions)} potential card locations")
-        #for card_position in card_positions:
-            #print(card_position)
-        if card_positions is None:
-            return None
-        result_image = draw_detected_cards(mtga_screenshot, card_positions)
-        save_image(result_image, detected_cards_path)
-
-        return sort_card_positions(card_positions)
-        #print(card_positions)
-
-    except Exception as e:
-        print(f"An error occurred in card_positions: {str(e)}")
+    result_image = draw_detected_cards(screenshot, verified_positions)
+    #save_image(result_image, 'detected_cards.png')
+    #print("Detected cards image saved as 'detected_cards.png'")    
+    return verified_positions
 
 def main():
-    get_card_positions()
+    main_thread = True
+    expected_cards = 14
+    card_positions = get_card_positions(expected_cards, main_thread)
+    print(f"Detected {len(card_positions)} cards out of {expected_cards} expected.")
+    for i, pos in enumerate(card_positions):
+        print(f"Card {i+1}: {pos}")
 
 if __name__ == "__main__":
     main()

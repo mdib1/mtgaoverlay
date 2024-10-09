@@ -10,7 +10,7 @@ materials used are property of Wizards of the Coast. (C) Wizards of the
 Coast LLC. See https://company.wizards.com/fancontentpolicy for more
 details.
 """
-
+from pynput import mouse
 import argparse
 import copy
 import json
@@ -28,6 +28,9 @@ import traceback
 import uuid
 import threading
 
+import sys
+from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import QThread, pyqtSignal
 
 
 from carddata import *
@@ -38,7 +41,7 @@ from collections import Counter
 
 
 import threading
-from overlay import show_overlay, show_all_overlays, show_card_overlay, hide_overlay, close_overlay, get_overlay_manager, run_overlay
+from overlay import *
 
 import dateutil.parser
 
@@ -165,29 +168,25 @@ def list_difference(list1, list2):
     count2 = Counter(list2)
     return [item for item in list1 if count1[item] > count2[item]]
 
-#def show_overlay_threaded(pack_info):
-#    threading.Thread(target=show_overlay, args=(pack_info,), daemon=True).start()
-
-
-# def get_card_stats_for_overlay(card_id, cards_in_set_df):
-#     try:
-#         # Lookup card in cards_in_set_df by card_id
-#         card_row = cards_in_set_df[cards_in_set_df['id'] == card_id]
-        
-#         # If card exists, extract the details
-#         if not card_row.empty:
-#             card_name = card_row['name'].values[0]
-#             GDWR = card_row['GDWR'].values[0]
-#             OHWR = card_row['OHWR'].values[0]
-#             GIHWR = card_row['GIHWR'].values[0]
-#             # Return both the formatted string and GIHWR for sorting
-#             return f"{card_name}\nGDWR: {GDWR:.2f}\n OHWR: {OHWR:.2f}\n GIHWR: {GIHWR:.2f}\n"
-#         else:
-#             return (f"Card ID {card_id} not found") 
-#     except Exception as e:
-#         logger.error(f'Error processing get_card_stats_for_overlay: {e}')
-
 import json
+
+
+def is_point_inside_polygon(x, y, polygon):
+    n = len(polygon)
+    inside = False
+    p1x, p1y = polygon[0]
+    for i in range(n + 1):
+        p2x, p2y = polygon[i % n]
+        if y > min(p1y, p2y):
+            if y <= max(p1y, p2y):
+                if x <= max(p1x, p2x):
+                    if p1y != p2y:
+                        xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                    if p1x == p2x or x <= xinters:
+                        inside = not inside
+        p1x, p1y = p2x, p2y
+    return inside
+
 
 def get_card_packdebug_info(card_id, cards_in_set_df):
     try:
@@ -328,7 +327,7 @@ class DraftOpens:
 class Follower:
     """Follows along a log, parses the messages, and passes along the parsed data to the API endpoint."""
 
-    def __init__(self, token, host, debug_mode):
+    def __init__(self, token, follower_thread, host, debug_mode):
         self.debug_mode = debug_mode
         #self.overlay_active = False
         self.host = host
@@ -337,14 +336,30 @@ class Follower:
         #self._api_client = seventeenlands.api_client.ApiClient(host=host)
         self._api_client = api_client.ApiClient(host=host)
         self._reinitialize()
+        #self.OVERLAY_UPDATE_INTERVAL = .01
+        self.OVERLAY_UPDATE_INTERVAL_MAX_TIME = 5
+        self.__DOUBLE_CLICK_DELAY = 1
+        self.TIME_TO_WAIT_FOR_MOUSE_BASED_OVERLAY_UPDATE = 0.3
+        self.mouse_listener = mouse.Listener(on_click=self.on_click)
+        self.mouse_listener.start()        
+        self.click_area = [(2179, 8), (2179, 88), (2090, 88), (2090, 8)]        
+        self.__last_mouse_click_time = 0        
+        self.last_overlay_update = 0
+        self.__last_card_positions = None        
+        self.__last_pack = None        
+        self.__draft_opens = DraftOpens()        
         self.__time_last_overlaid = None
         self.__cards_in_set_df = None
-        self.__set_data_not_available = False
-        self.__draft_opens = DraftOpens()
+        self.__set_data_not_available = False        
+        self.__currentScene = None
+        self.__last_card_details_withstats = []
+        self.__update_timer = None
+        
+        #self.__overlay_manager = overlay_manager
+        self.follower_thread = follower_thread
+
 
     def _reinitialize(self):
-        self.__set_data_not_available = False
-        self.__time_last_overlaid = None
         self.buffer = []
         self.cur_log_time = datetime.datetime.fromtimestamp(0)
         self.last_utc_time = datetime.datetime.fromtimestamp(0)
@@ -377,14 +392,46 @@ class Follower:
         self.game_history_events = []
         self.pending_game_submission = {}
         self.pending_game_result = {}
-        self.__draft_opens = DraftOpens()
         self.pending_match_result = {}
 
         self.last_blob = ''
         self.current_debug_blob = ''
         self.recent_lines = []
 
+        self.__last_mouse_click_time = 0        
+        self.last_overlay_update = 0
+        self.__last_card_positions = None        
+        self.__last_pack = None        
+        self.__draft_opens = DraftOpens()        
+        self.__time_last_overlaid = None
+        self.__cards_in_set_df = None
+        self.__set_data_not_available = False        
+        self.__currentScene = None        
+        self.__last_card_details_withstats = []
+
         self.__clear_match_data()
+
+    def on_click(self, x, y, button, pressed):
+        if pressed:
+            if is_point_inside_polygon(x, y, self.click_area):
+                #logger.info(f"Click detected inside the specified area at ({x}, {y})")
+                # Perform action for click inside the area
+                TIME_SINCE_LAST_MOUSE_CLICK = time.time() - self.__last_mouse_click_time
+                if TIME_SINCE_LAST_MOUSE_CLICK > self.__DOUBLE_CLICK_DELAY:
+                    logger.info("Updating due to mouse click")
+                    self.__last_mouse_click_time = time.time()
+
+                    if self.__update_timer:
+                        self.__update_timer.cancel()
+
+                    self.__update_timer = threading.Timer(self.TIME_TO_WAIT_FOR_MOUSE_BASED_OVERLAY_UPDATE, self.__update_overlays)
+                    self.last_overlay_update = time.time()
+                    self.__update_timer.start()
+                                                                
+                    #self.__update_overlays()
+            #else:
+                #logger.info(f"Click detected outside the specified area at ({x}, {y})")
+                # Optionally, perform a different action or do nothing
 
     def _add_base_api_data(self, blob):
         return {
@@ -428,6 +475,12 @@ class Follower:
                                 logger.info(f'Starting from beginning of file as file has been updated much more recently than the last read (previous = {last_read_time}; current = {last_modified_time})')
                                 break
                             elif follow:
+                                OVERLAY_UPDATE_INTERVAL_MAX_TIME_ELAPSED = time.time() - self.last_overlay_update >= self.OVERLAY_UPDATE_INTERVAL_MAX_TIME
+                                #logger.info(str(current_time - self.last_overlay_update)+" seconds since last update")
+                                if OVERLAY_UPDATE_INTERVAL_MAX_TIME_ELAPSED:
+                                    self.last_overlay_update = time.time()
+                                    logger.info("updating due to time elapsing")
+                                    self.__update_overlays()
                                 time.sleep(SLEEP_TIME)
                             else:
                                 break
@@ -497,10 +550,7 @@ class Follower:
             self.buffer.append(line)
 
     def __handle_complete_log_entry(self):
-        """Mark the current log message complete. Should be called when waiting for more log messages."""
-        #if self.overlay_active:
-            #hide_overlay()
-            #self.overlay_active = False        
+        """Mark the current log message complete. Should be called when waiting for more log messages."""   
         if len(self.buffer) == 0:
             return
         if self.cur_log_time is None:
@@ -524,7 +574,7 @@ class Follower:
             logger.info(f'Skipping repeated complete log entry: {full_log}')
 
         self.buffer = []
-        # self.cur_log_time = None
+        #self.cur_log_time = None
 
     def __maybe_get_utc_timestamp(self, blob):
         timestamp = None
@@ -553,14 +603,6 @@ class Follower:
 
     def __handle_blob(self, full_log):
         """Attempt to parse a complete log message and send the data if relevant."""
-        # OVERLAY_DELAY = 5
-        # time_now = datetime.datetime.now()
-        # if self.__time_last_overlaid is None:
-        #     self.__time_last_overlaid = time_now
-        # else:
-        #     time_since_last = (time_now - self.__time_last_overlaid).total_seconds()
-        #     if time_since_last < OVERLAY_DELAY:
-        #         time.sleep(OVERLAY_DELAY - time_since_last)  
         match = JSON_START_REGEX.search(full_log)
         #logger.info(full_log)
         if not match:
@@ -581,22 +623,22 @@ class Follower:
             if maybe_time is not None:
                 self.last_utc_time = maybe_time
                 
-                # Ensure maybe_time is timezone-aware
-                # if maybe_time.tzinfo is None:
-                #     maybe_time = maybe_time.replace(tzinfo=datetime.timezone.utc)
+                #Ensure maybe_time is timezone-aware
+                if maybe_time.tzinfo is None:
+                    maybe_time = maybe_time.replace(tzinfo=datetime.timezone.utc)
                 
-                # current_time = datetime.datetime.now(datetime.timezone.utc)
-                # time_difference = (current_time - maybe_time).total_seconds()
+                current_time = datetime.datetime.now(datetime.timezone.utc)
+                time_difference = (current_time - maybe_time).total_seconds()
                 
-                # #logger.info(f'Log entry timestamp: {maybe_time}')
-                # #logger.info(f'Current time: {current_time}')
-                # #logger.info(f'Time difference: {time_difference} seconds')
+                #logger.info(f'Log entry timestamp: {maybe_time}')
+                #logger.info(f'Current time: {current_time}')
+                #logger.info(f'Time difference: {time_difference} seconds')
                 
-                # if time_difference > 10:
-                #     #logger.info(f'Skipping old log entry from {maybe_time}')
-                #     return
-                # else:
-                #     logger.info(f'Processing log entry from {maybe_time}')
+                if time_difference > 10:
+                    logger.info(f'Skipping old log entry from {maybe_time}')
+                    return
+                else:
+                    logger.info(f'Processing log entry from {maybe_time}')
         except Exception as e:
             logger.error(f'Error processing timestamp: {e}')
             logger.error(f'maybe_time: {maybe_time}, type: {type(maybe_time)}')
@@ -606,6 +648,8 @@ class Follower:
 
         if json_value_matches('Client.Connected', ['params', 'messageName'], json_obj): # Doesn't exist any more
             self.__handle_login(json_obj)
+        elif 'SceneChange' in full_log and 'fromSceneName' in json_obj:
+            self.__handle_scenechange(json_obj)
         elif 'Event_Join' in full_log and 'EventName' in json_obj:
             self.__handle_joined_pod(json_obj)
         elif 'DraftStatus' in json_obj:
@@ -1150,7 +1194,6 @@ class Follower:
                 #logger.info(f'Draft pack: {pack}')
                 #pack_info = f"Pack {pack['pack_number']}, Pick {pack['pick_number']}\nCards: {', '.join(map(str, pack['card_ids']))}"                 
                 self.__prep_and_show_overlay(pack)
-                #self.overlay_active = True
                 self._api_client.submit_draft_pack(self._add_base_api_data(pack))
 
             except Exception as e:
@@ -1176,7 +1219,6 @@ class Follower:
             missing_cards = list_difference(self.__draft_opens.rounds[pack_number_index].boosters[booster_num], pack['card_ids'])
             return missing_cards
             #logger.info(missing_cards)
-        #if self.__draft_opens[pack['pack_number']]
 
     def __get_card_data_from_mtgjson(self, setsymbol):
         self.__cards_in_set_mtgjson_df = GetDataForSetFromMTGJson(setsymbol)
@@ -1231,8 +1273,83 @@ class Follower:
         pack['card_ids'] = sorted_card_ids
         return pack, card_packdebug_info
 
+
+    def __update_overlays(self):
+        # Implement the logic to update overlays here
+        # This method should be called regularly to reflect any UI changes
+        if self.__currentScene != "Draft":
+            return
+        try:
+            if self.__check_for_new_overlays():
+                #logger.info(self.__last_pack)
+                logger.info("we need to update overlays")
+                self.__only_show_overlay()
+                #self.__prep_and_show_overlay(self.__last_pack)
+            
+        except Exception as e:
+            logger.error(f"Error updating overlays: {e}")
+
+    def __check_for_new_overlays(self):
+        # Implement logic to check if new overlays need to be created
+        #logger.info("check if we need to update overlays")
+
+        try:
+            card_positions = get_card_positions(len(self.__last_pack['card_ids']))
+        except Exception as e:
+            logger.error(f"Error getting card positions: {e}")
+            return False
+        #logger.info("card_positions: "+str(card_positions))
+        #logger.info("__last_card_positions: "+str(self.__last_card_positions))
+        if card_positions:
+            if self.__last_card_positions != card_positions:
+                logger.info("New card positions detected, updating overlays")
+                self.__last_card_positions = card_positions
+                return True
+        
+        logger.info("No update needed for overlays")
+        return False
+
+    def __only_show_overlay(self):
+        self.last_overlay_update = time.time()
+        try:
+            card_positions = get_card_positions(len(self.__last_pack['card_ids']))
+            #logger.info("get card positions complete")
+        except Exception as e:
+            logger.info(f"Error in calling function: {str(e)}")                
+        if card_positions:
+            self.__last_card_positions = card_positions
+            #for card_position in card_positions:
+            #    logger.info(card_position)
+            #card_stats_with_gihwr = [get_card_stats_for_overlay(card_id, self.__cards_in_set_df) for card_id in pack['card_ids']]
+
+            #logger.info(card_positions)
+            #logger.info(card_stats_with_gihwr)
+            card_overlays = []
+            i = 0
+            #logger.info(card_details_withstats)
+            #logger.info(len(card_details_withstats))
+            #logger.info(len(card_positions))
+            if len(self.__last_card_details_withstats) != len(card_positions):
+                logger.info("mismatch between detected cards on screen and cards in pack")
+                #self.__overlay_manager.hide_overlay()
+                return
+            for card_stats in self.__last_card_details_withstats:
+                #logger.info(card_stats[0])
+                #logger.info(card_positions[i])
+                #logger.info(i)
+                card_overlays.append([card_stats[0], card_positions[i]])
+                i = i + 1            
+            #logger.info("Card overlays: "+str(card_overlays))
+            #logger.info(pack_info)
+            self.show_all_overlays(card_overlays, self.__last_pack_info)
+    
+    def show_all_overlays(self, card_overlays, pack_info):
+        #self.overlay_update_signal.emit(card_overlays, pack_info)        
+        self.follower_thread.update_overlay(card_overlays, self.__last_pack_info)
+
     def __prep_and_show_overlay(self, pack):
         try:
+            self.__last_pack = pack
             if self.__cards_in_set_df is None:
                 if not self.__set_data_not_available:
                     self.__populate_cards_in_set_df(pack)        
@@ -1244,9 +1361,9 @@ class Follower:
             
             if self.__cards_in_set_df is None:
                 #data not available yet so we use mtgjson data without stats
-                card_details_withstats = [get_card_info(card_id, self.__cards_in_set_mtgjson_df) for card_id in pack['card_ids']]
+                self.__last_card_details_withstats = [get_card_info(card_id, self.__cards_in_set_mtgjson_df) for card_id in pack['card_ids']]
             else:
-                card_details_withstats = [get_card_info(card_id, self.__cards_in_set_df) for card_id in pack['card_ids']]
+                self.__last_card_details_withstats = [get_card_info(card_id, self.__cards_in_set_df) for card_id in pack['card_ids']]
 
             #debug a full pack:
             if len(pack['card_ids']) > 13:
@@ -1267,24 +1384,8 @@ class Follower:
                 pack_info += "\n" + "Cards that are missing: "
                 pack_info += "\n" + "\n".join(missing_card_names_output)
 
-            #show_overlay(pack_info) disable full overlay for now to test card overlays
-            card_positions = get_card_positions()
-            if card_positions:
-                #for card_position in card_positions:
-                    #logger.info(card_position)
-                #card_stats_with_gihwr = [get_card_stats_for_overlay(card_id, self.__cards_in_set_df) for card_id in pack['card_ids']]
-
-                #logger.info(card_positions)
-                #logger.info(card_stats_with_gihwr)
-                card_overlays = []
-                i = 0
-                for card_stats in card_details_withstats:
-                    #logger.info(card_stats[0])
-                    #logger.info(card_positions[i])
-                    #logger.info(i)
-                    card_overlays.append([card_stats[0], card_positions[i]])
-                    i = i + 1            
-                show_all_overlays(card_overlays, pack_info)
+            self.__last_pack_info = pack_info
+            #self.__only_show_overlay()
             if (self.debug_mode):
                 input("Press Enter to continue to the next entry...")     
         except Exception as e:
@@ -1313,13 +1414,21 @@ class Follower:
                 stacktrace=traceback.format_exc(),
             )
 
+    def __handle_scenechange(self, json_obj):
+        #logger.info(json_obj['fromSceneName'])
+        if json_obj['fromSceneName']=="Draft":
+            #self.__overlay_manager.hide_overlay()
+            self._reinitialize()
+        elif json_obj['toSceneName']=="Draft":
+            self.__currentScene = "Draft"
+
     def __handle_joined_pod(self, json_obj):
         """Handle 'Event_Join' messages."""
         self.__clear_game_data()
 
         try:
             self.cur_draft_event = json_obj['EventName']
-            #logger.info(f'Joined draft pod: {self.cur_draft_event}')
+            logger.info(f'Joined draft pod: {self.cur_draft_event}')
             self.__draft_opens = DraftOpens()
 
         except Exception as e:
@@ -1387,7 +1496,7 @@ class Follower:
                 'method': 'Draft.Notify',
             }
             #logger.info(f'Human draft pack (Draft.Notify): {pack}')
-            #self.__prep_and_show_overlay(pack)
+            self.__prep_and_show_overlay(pack)
             self._api_client.submit_human_draft_pack(self._add_base_api_data(pack))
 
         except Exception as e:
@@ -1410,7 +1519,7 @@ class Follower:
                 'companion': decks['Companions'][0]['cardId'] if len(decks['Companions']) > 0 else 0,
                 'is_during_match': False,
             }
-            #logger.info(f'Deck submission (Event_SetDeck): {deck}')
+            logger.info(f'Deck submission (Event_SetDeck): {deck}')
             self._api_client.submit_deck_submission(self._add_base_api_data(deck))
 
         except Exception as e:
@@ -1425,7 +1534,7 @@ class Follower:
         try:
             self.cur_rank_data = json_obj
             self.cur_user = json_obj.get('playerId', self.cur_user)
-            #logger.info(f'Parsed rank info for {self.cur_user}: {self.cur_rank_data}')
+            logger.info(f'Parsed rank info for {self.cur_user}: {self.cur_rank_data}')
             data = {
                 'rank_data': self.cur_rank_data,
                 'limited_rank': None,
@@ -1662,51 +1771,79 @@ def verify_version(host, prompt_if_update_required):
     return False
 
 
-def processing_loop(args, token, overlay_manager):
-    filepaths = POSSIBLE_CURRENT_FILEPATHS
-    if args.log_file is not None:
-        filepaths = (args.log_file, )
+# def processing_loop(args, token, overlay_manager):
+#     filepaths = POSSIBLE_CURRENT_FILEPATHS
+#     if args.log_file is not None:
+#         filepaths = (args.log_file, )
 
-    follow = not args.once
+#     follow = not args.once
 
-    follower = Follower(token, host=args.host, debug_mode=args.debug_mode)
+#     follower = Follower(token, overlay_manager, host=args.host, debug_mode=args.debug_mode)
 
-    # if running in "normal" mode...
-    #if (
-    #    args.log_file is None
-    #    and args.host == seventeenlands.api_client.DEFAULT_HOST
-    #    and follow
-    #):
-        # parse previous log once at startup to catch up on any missed events
-        #for filename in POSSIBLE_PREVIOUS_FILEPATHS:
-        #    if os.path.exists(filename):
-        #        logger.info(f'Parsing the previous log {filename} once')
-        #        follower.parse_log(filename=filename, follow=False)
-        #        break
+#     # if running in "normal" mode...
+#     #if (
+#     #    args.log_file is None
+#     #    and args.host == seventeenlands.api_client.DEFAULT_HOST
+#     #    and follow
+#     #):
+#         # parse previous log once at startup to catch up on any missed events
+#         #for filename in POSSIBLE_PREVIOUS_FILEPATHS:
+#         #    if os.path.exists(filename):
+#         #        logger.info(f'Parsing the previous log {filename} once')
+#         #        follower.parse_log(filename=filename, follow=False)
+#         #        break
 
-    # tail and parse current logfile to handle ongoing events
-    any_found = False
-    for filename in filepaths:
-        if os.path.exists(filename):
-            any_found = True
-            logger.info(f'Following along {filename}')
-            #try this
-            threading.Thread(target=follower.parse_log, args=(filename, not args.once), daemon=True).start()
+#     # tail and parse current logfile to handle ongoing events
+#     any_found = False
+#     for filename in filepaths:
+#         if os.path.exists(filename):
+#             any_found = True
+#             logger.info(f'Following along {filename}')
+#             #try this
+#             threading.Thread(target=follower.parse_log, args=(filename, follow), daemon=True).start()
 
-            #follower.parse_log(filename=filename, follow=follow)
-            overlay_manager.run()
+#             #follower.parse_log(filename=filename, follow=follow)
+#             overlay_manager.run()
 
-    if not any_found:
-        logger.warning("Found no files to parse. Try to find Arena's Player.log file and pass it as an argument with -l")
+#     if not any_found:
+#         logger.warning("Found no files to parse. Try to find Arena's Player.log file and pass it as an argument with -l")
 
-    logger.info(f'Exiting')
+#     logger.info(f'Exiting')
 
+class FollowerThread(QThread):
+    overlay_update_signal = pyqtSignal(list, str)
+
+    def __init__(self, token, host, debug_mode, log_file, once):
+        super().__init__()
+        self.token = token
+        self.host = host
+        self.debug_mode = debug_mode
+        self.log_file = log_file
+        self.once = once
+        self.follower = None
+
+    def run(self):
+        self.follower = Follower(self.token, self, host=self.host, debug_mode=self.debug_mode)
+        filepaths = POSSIBLE_CURRENT_FILEPATHS if self.log_file is None else (self.log_file,)
+        
+        for filename in filepaths:
+            if os.path.exists(filename):
+                self.follower.parse_log(filename=filename, follow=not self.once)
+                break
+        else:
+            logger.warning("Found no files to parse. Try to find Arena's Player.log file and pass it as an argument with -l")
+
+    def update_overlay(self, card_overlays, pack_info):
+        self.overlay_update_signal.emit(card_overlays, pack_info)
 
 def main():
-    #app = QApplication(sys.argv)
+    app = QApplication(sys.argv)    
+
     parser = argparse.ArgumentParser(description='MTGA log follower')
 
-    overlay_manager = get_overlay_manager()
+    #app = QApplication(sys.argv)
+    #manager = OverlayManager()
+    #overlay_manager = get_overlay_manager()
 
     config_token = get_config()
 
@@ -1734,8 +1871,15 @@ def main():
     token = args.token
     logger.info(f'Using token {token[:4]}...{token[-4:]}')
 
-    processing_loop(args, token, overlay_manager)
-    #hide_overlay()
+
+    overlay_manager = OverlayManager()
+    
+    follower_thread = FollowerThread(token, args.host, args.debug_mode, args.log_file, args.once)
+    follower_thread.overlay_update_signal.connect(overlay_manager.show_all_overlays)
+    follower_thread.start()
+    overlay_manager.run()
+    sys.exit(app.exec_())
+    #processing_loop(args, token, overlay_manager)
 
 
 if __name__ == '__main__':

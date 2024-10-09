@@ -1,156 +1,102 @@
 import sys
 from PyQt5 import QtCore, QtWidgets
-from PyQt5.QtWidgets import QMainWindow, QApplication, QLabel, QVBoxLayout, QWidget, QPushButton
-from PyQt5.QtCore import Qt, QObject, pyqtSignal
+from PyQt5.QtWidgets import QMainWindow, QApplication, QLabel, QVBoxLayout, QWidget
+from PyQt5.QtCore import Qt, QObject, pyqtSignal, QRect, pyqtSlot
+import ctypes
 
-class OverlaySignals(QObject):
-    #show_signal = pyqtSignal(str)
-    show_signal = pyqtSignal(str, QtCore.QRect)
-    hide_signal = pyqtSignal()
-    close_signal = pyqtSignal()
+class OverlayWidget(QWidget):
+    def __init__(self, message, rect, parent=None):
+        super().__init__(parent)
+        self.setGeometry(rect)
+        self.setWindowFlags(
+            Qt.WindowStaysOnTopHint |
+            Qt.FramelessWindowHint |
+            Qt.Tool |
+            Qt.WindowTransparentForInput
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+        self.layout = QVBoxLayout(self)
+        self.text_label = QLabel(message, self)
+        self.layout.addWidget(self.text_label)
+        
+        self.update_widget(message, rect)
+        self.show()
+        #print(f"OverlayWidget created and shown: {self.geometry()}")        
+
+    def paintEvent(self, event):
+        #print(f"Paint event for OverlayWidget: {self.geometry()}")
+        super().paintEvent(event)
+
+    def show(self):
+        super().show()
+        #print(f"OverlayWidget show called: {self.geometry()}")
+
+    def update_widget(self, message, rect):
+        self.setGeometry(rect)
+        self.text_label.setText(message)
+        self.text_label.setGeometry(self.rect())
+        self.text_label.setAlignment(Qt.AlignCenter)
+        self.text_label.setWordWrap(True)
+        self.text_label.setStyleSheet("""
+            color: white;             
+            background-color: rgba(0, 0, 0, 100);  
+        """)
+        self.layout.setContentsMargins(0,0,0,0)
+        self.layout.setSpacing(0)        
+        self.update()
+        #print(f"OverlayWidget updated: {message[:20]}... at {rect}")          
 
 class MainWindow(QMainWindow):
-    def __init__(self, message, rect):
-        super().__init__()
-        self.setWindowFlags(
-            QtCore.Qt.WindowStaysOnTopHint |
-            QtCore.Qt.FramelessWindowHint |
-            QtCore.Qt.X11BypassWindowManagerHint
-        )
-        
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        self.set_position(rect)
-
-        central_widget = QWidget(self)
-        layout = QVBoxLayout(central_widget)
-
-        self.text_label = QLabel(message, self)
-        self.text_label.setAlignment(Qt.AlignCenter)
-        self.text_label.setWordWrap(True)  # Enable word wrapping
-        self.text_label.setFixedWidth(rect.width())  # Set a fixed width for the label
-        self.text_label.setStyleSheet("""
-            color: white; 
-            font-size: 24px; 
-            background-color: rgba(0, 0, 0, 100);
-            padding: 2px;
-            border-radius: 5px;
-        """)
-
-        # self.close_button = QPushButton("Close", self)
-        # self.close_button.setStyleSheet("""
-        #     background-color: red;
-        #     color: white;
-        #     font-size: 18px;
-        #     padding: 5px;
-        #     border-radius: 3px;
-        # """)        
-        # self.close_button.clicked.connect(self.close)        
-
-        layout.addWidget(self.text_label)
-        #layout.addWidget(self.close_button, alignment=Qt.AlignCenter)        
-        self.setCentralWidget(central_widget)
-
-        self.update_text(message)
-
-    def update_text(self, message):
-        self.text_label.setText(message)
-        #self.text_label.adjustSize()
-        #self.adjustSize()
-
-    def set_position(self, rect):
-        """Sets the position and size of the window based on the QRect (x, y, width, height)."""
-        # Move to the given position (rect.x, rect.y)
-        #print(f"Moving to: x={rect.x()}, y={rect.y()}, width={rect.width()}, height={rect.height()}")
-        self.move(rect.x(), rect.y())
-        # Set the fixed size based on width and height
-        self.setFixedSize(rect.width(), rect.height())
-
-class OverlayManager(QObject):
     def __init__(self):
         super().__init__()
-        self.app = QApplication.instance() or QApplication(sys.argv)
-        self.windows = []
-        self.signals = OverlaySignals()
-        
-        self.signals.show_signal.connect(self.show_overlay)
+        self.setWindowTitle("MTGA Draft Overlay")
 
-        #self.signals.hide_signal.connect(self.hide_overlay)
-        #self.signals.close_signal.connect(self.close_overlay)
-        #self.window.close_button.clicked.connect(self.close_overlay)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setCentralWidget(QWidget())  # Dummy widget to allow overlays
 
-    def show_overlay(self, message, rect):
-        # Create a new overlay window instance for each call
-        window = MainWindow(message, rect)
-        window.show()
-        self.windows.append(window)  # Store the reference
+        self.overlays = {}
+        print("MainWindow initialized")           
 
-    def show_missing_cards_overlay(self, message):
-        screen = QApplication.primaryScreen().geometry()
-        rect = QtCore.QRect(0, screen.height() - 200, 300, 200)  # Adjust size as needed
-        window = MainWindow(message, rect)
-        window.setStyleSheet("background-color: rgba(0, 0, 0, 150);")  # Semi-transparent background
-        window.text_label.setStyleSheet("""
-            color: white; 
-            font-size: 18px; 
-            background-color: transparent;
-            padding: 2px;
-        """)
-        #window.close_button.hide()  # Hide the close button for this overlay
-        window.show()
-        self.windows.append(window)
+    def show_overlay(self, overlay_id, message, rect):
+        if overlay_id in self.overlays:
+            self.overlays[overlay_id].update_widget(message, rect)
+        else:
+            overlay = OverlayWidget(message, rect, self)
+            self.overlays[overlay_id] = overlay
+        self.overlays[overlay_id].show()
+        #print(f"Overlay {overlay_id} should be visible now: {rect}")            
 
-    #def show_overlay(self, message):
-        #self.window.update_text(message)
-        #self.window.show()
+    def show_all_overlays(self, card_overlays, missing_cards_overlay_string):
+        #print(f"Showing all overlays: {len(card_overlays)} cards")
+        for i, overlay in enumerate(card_overlays):
+            self.show_overlay(f"card_{i}", overlay[0], QRect(*overlay[1]))
+        if missing_cards_overlay_string:
+            self.show_missing_cards_overlay(missing_cards_overlay_string)
+        self.update()  # This calls update on the MainWindow
+        #print("All overlays should be visible now")
 
 
-    def hide_overlay(self):
-        for window in self.windows:
-            window.hide()
+    def show(self):
+        super().show()
+        #print(f"MainWindow shown: {self.geometry()}")
+
+    def paintEvent(self, event):
+        #print("MainWindow paint event")
+        super().paintEvent(event)        
+
+class OverlayManager(QObject):
+    overlay_update_signal = pyqtSignal(str, str, QRect)
+    hide_overlay_signal = pyqtSignal(str)
+    def __init__(self):
+        super().__init__()
+        self.main_window = MainWindow()
+
+    @pyqtSlot(list, str)
+    def show_all_overlays(self, card_overlays, missing_cards_overlay_string):
+        self.main_window.show_all_overlays(card_overlays, missing_cards_overlay_string)
 
     def run(self):
-        self.app.exec_()
-
-    def close_overlay(self):
-        for window in self.windows:
-            window.close()
-        self.app.quit()        
-
-
-overlay_manager = None
-
-def show_card_overlay(message, card_position):
-    rect = QtCore.QRect(*card_position)
-    #print("show card overlay at position "+str(card_position))
-    get_overlay_manager().signals.show_signal.emit(message, rect)    
-
-def get_overlay_manager():
-    global overlay_manager
-    if overlay_manager is None:
-        overlay_manager = OverlayManager()
-    return overlay_manager
-
-def show_overlay(message):
-    get_overlay_manager().signals.show_signal.emit(message)
-
-def close_overlay():
-    get_overlay_manager().signals.close_signal.emit()
-
-def hide_overlay():
-    get_overlay_manager().signals.hide_signal.emit()
-
-def run_overlay():
-    get_overlay_manager().run()
-
-def show_missing_cards_overlay(message):
-    get_overlay_manager().show_missing_cards_overlay(message)
-
-def show_all_overlays(card_overlays, missing_cards_overlay_string):
-    for overlay in card_overlays:
-        show_card_overlay(overlay[0],overlay[1])
-    if missing_cards_overlay_string != "":
-        show_missing_cards_overlay(missing_cards_overlay_string)
-
-if __name__ == '__main__':
-    show_overlay("Test Overlay 1")
-    run_overlay()
+        self.main_window.show()
