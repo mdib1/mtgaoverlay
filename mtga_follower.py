@@ -245,8 +245,14 @@ def get_card_info(card_id, cards_in_set_df):
             # if GIHWR != 'N/A':
             #     info_parts.append(f"GIHWR: {GIHWR:.2f}" if isinstance(GIHWR, float) else f"GIHWR: {GIHWR}")
             
-            info_string = ", ".join(info_parts)
-            formatted_string = f"{card_name} ({info_string})" if info_parts else card_name
+            #info_string = ", ".join(info_parts)
+            info_string = ""
+            for part in info_parts:
+                info_string += part
+                info_string += "\n"
+
+            #formatted_string = f"{card_name} ({info_string})" if info_parts else card_name
+            formatted_string = f"{info_string}" if info_parts else card_name
             
             # Use GIHWR for sorting if it exists and is a number, otherwise use 0
             sort_value = float(GIHWR) if isinstance(GIHWR, (int, float)) else 0
