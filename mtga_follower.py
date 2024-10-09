@@ -245,14 +245,14 @@ def get_card_info(card_id, cards_in_set_df):
             # if GIHWR != 'N/A':
             #     info_parts.append(f"GIHWR: {GIHWR:.2f}" if isinstance(GIHWR, float) else f"GIHWR: {GIHWR}")
             
-            #info_string = ", ".join(info_parts)
-            info_string = ""
-            for part in info_parts:
-                info_string += part
-                info_string += "\n"
+            info_string = ", ".join(info_parts)
+            formatted_string = f"{card_name} ({info_string})" if info_parts else card_name
 
-            #formatted_string = f"{card_name} ({info_string})" if info_parts else card_name
-            formatted_string = f"{info_string}" if info_parts else card_name
+            # info_string = ""
+            # for part in info_parts:
+            #     info_string += part
+            #     info_string += "\n"
+            #formatted_string = f"{info_string}" if info_parts else card_name
             
             # Use GIHWR for sorting if it exists and is a number, otherwise use 0
             sort_value = float(GIHWR) if isinstance(GIHWR, (int, float)) else 0
@@ -484,7 +484,6 @@ class Follower:
                                 OVERLAY_UPDATE_INTERVAL_MAX_TIME_ELAPSED = time.time() - self.last_overlay_update >= self.OVERLAY_UPDATE_INTERVAL_MAX_TIME
                                 #logger.info(str(current_time - self.last_overlay_update)+" seconds since last update")
                                 if OVERLAY_UPDATE_INTERVAL_MAX_TIME_ELAPSED:
-                                    self.last_overlay_update = time.time()
                                     logger.info("updating due to time elapsing")
                                     self.__update_overlays()
                                 time.sleep(SLEEP_TIME)
@@ -1199,7 +1198,7 @@ class Follower:
                 }
                 #logger.info(f'Draft pack: {pack}')
                 #pack_info = f"Pack {pack['pack_number']}, Pick {pack['pick_number']}\nCards: {', '.join(map(str, pack['card_ids']))}"                 
-                self.__prep_and_show_overlay(pack)
+                self.delayed_prep_and_show(pack)
                 self._api_client.submit_draft_pack(self._add_base_api_data(pack))
 
             except Exception as e:
@@ -1281,6 +1280,7 @@ class Follower:
 
 
     def __update_overlays(self):
+        self.last_overlay_update = time.time()
         # Implement the logic to update overlays here
         # This method should be called regularly to reflect any UI changes
         if self.__currentScene != "Draft":
@@ -1290,7 +1290,7 @@ class Follower:
                 #logger.info(self.__last_pack)
                 logger.info("we need to update overlays")
                 self.__only_show_overlay()
-                #self.__prep_and_show_overlay(self.__last_pack)
+                #self.delayed_prep_and_show(self.__last_pack)
             
         except Exception as e:
             logger.error(f"Error updating overlays: {e}")
@@ -1321,7 +1321,8 @@ class Follower:
             card_positions = get_card_positions(len(self.__last_pack['card_ids']))
             #logger.info("get card positions complete")
         except Exception as e:
-            logger.info(f"Error in calling function: {str(e)}")                
+            logger.info(f"Error in calling function: {str(e)}") 
+            return               
         if card_positions:
             self.__last_card_positions = card_positions
             #for card_position in card_positions:
@@ -1353,7 +1354,13 @@ class Follower:
         #self.overlay_update_signal.emit(card_overlays, pack_info)        
         self.follower_thread.update_overlay(card_overlays, self.__last_pack_info)
 
+    def delayed_prep_and_show(self, pack):
+        threading.Timer(.7, lambda: self.__prep_and_show_overlay(pack)).start()
+        #self.__prep_and_show_overlay(pack)
+
     def __prep_and_show_overlay(self, pack):
+        logger.info("prep and show")
+        self.last_overlay_update = time.time()  
         try:
             self.__last_pack = pack
             if self.__cards_in_set_df is None:
@@ -1391,7 +1398,7 @@ class Follower:
                 pack_info += "\n" + "\n".join(missing_card_names_output)
 
             self.__last_pack_info = pack_info
-            #self.__only_show_overlay()
+            self.__only_show_overlay()
             if (self.debug_mode):
                 input("Press Enter to continue to the next entry...")     
         except Exception as e:
@@ -1459,7 +1466,7 @@ class Follower:
                 'method': 'LogBusiness',
             }
             #logger.info(f'Human draft pack (combined): {pack}')
-            self.__prep_and_show_overlay(pack)
+            self.delayed_prep_and_show(pack)
             self._api_client.submit_human_draft_pack(self._add_base_api_data(pack))
 
         except Exception as e:
@@ -1502,7 +1509,7 @@ class Follower:
                 'method': 'Draft.Notify',
             }
             #logger.info(f'Human draft pack (Draft.Notify): {pack}')
-            self.__prep_and_show_overlay(pack)
+            self.delayed_prep_and_show(pack)
             self._api_client.submit_human_draft_pack(self._add_base_api_data(pack))
 
         except Exception as e:
